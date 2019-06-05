@@ -943,6 +943,12 @@ int main(void)
     conn_params_init();
     peer_manager_init();
 
+    uint8_t passkey[] = "123456";
+    ble_opt_t ble_opt;
+    ble_opt.gap_opt.passkey.p_passkey = &passkey[0];
+    uint32_t err_code = sd_ble_opt_set(BLE_GAP_OPT_PASSKEY, &ble_opt);
+    APP_ERROR_CHECK(err_code); 
+
     // Start execution.
     NRF_LOG_INFO("Glucose example started.");
     application_timers_start();
