@@ -80,6 +80,20 @@
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
 
+///////////Added for bonding////////////
+#include "peer_manager.h"
+#include "peer_manager_handler.h"
+
+#define SEC_PARAM_BOND                  1                                       /**< Perform bonding. */
+#define SEC_PARAM_MITM                  1                                       /**< Man In The Middle protection is enabled. */
+#define SEC_PARAM_LESC                  1                                       /**< LE Secure Connections not enabled. */
+#define SEC_PARAM_KEYPRESS              0                                       /**< Keypress notifications not enabled. */
+#define SEC_PARAM_IO_CAPABILITIES       BLE_GAP_IO_CAPS_DISPLAY_ONLY            /**< Display Only. */
+#define SEC_PARAM_OOB                   0                                       /**< Out Of Band data not available. */
+#define SEC_PARAM_MIN_KEY_SIZE          7                                       /**< Minimum encryption key size. */
+#define SEC_PARAM_MAX_KEY_SIZE          16                                      /**< Maximum encryption key size. */
+///////////Added for bonding////////////
+
 #define APP_BLE_CONN_CFG_TAG            1                                           /**< A tag identifying the SoftDevice BLE configuration. */
 
 #define DEVICE_NAME                     "Nordic_UART"                               /**< Name of device. Will be included in the advertising data. */
@@ -117,6 +131,17 @@ static ble_uuid_t m_adv_uuids[]          =                                      
     {BLE_UUID_NUS_SERVICE, NUS_SERVICE_UUID_TYPE}
 };
 
+////////////Added for bonding///////////
+// Static passkey
+#define STATIC_PASSKEY    "123456" 
+static ble_opt_t    m_static_pin_option;
+uint8_t passkey[] = STATIC_PASSKEY; 
+////////////Added for bonding///////////
+
+
+////////////Added for bonding///////////
+static void advertising_start(bool erase_bonds);
+////////////Added for bonding///////////
 
 /**@brief Function for assert macro callback.
  *
@@ -133,6 +158,29 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
 {
     app_error_handler(DEAD_BEEF, line_num, p_file_name);
 }
+
+
+///////////Added for bonding/////////////
+/**@brief Function for handling Peer Manager events.
+ *
+ * @param[in] p_evt  Peer Manager event.
+ */
+static void pm_evt_handler(pm_evt_t const * p_evt)
+{
+    pm_handler_on_pm_evt(p_evt);
+    pm_handler_flash_clean(p_evt);
+
+    switch (p_evt->evt_id)
+    {
+        case PM_EVT_PEERS_DELETE_SUCCEEDED:
+            advertising_start(false);
+            break;
+
+        default:
+            break;
+    }
+}
+///////////Added for bonding////////////
 
 /**@brief Function for initializing the timer module.
  */
@@ -169,6 +217,12 @@ static void gap_params_init(void)
 
     err_code = sd_ble_gap_ppcp_set(&gap_conn_params);
     APP_ERROR_CHECK(err_code);
+
+    ////////Added for bonding ///////////
+    m_static_pin_option.gap_opt.passkey.p_passkey = &passkey[0]; 
+    err_code =  sd_ble_opt_set(BLE_GAP_OPT_PASSKEY, &m_static_pin_option); 
+    APP_ERROR_CHECK(err_code);
+    ////////Added for bonding ///////////
 }
 
 
@@ -387,17 +441,19 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
             APP_ERROR_CHECK(err_code);
         } break;
 
-        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
+         /////////Removed for ebonding process//////////
+        /*case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
             // Pairing not supported
             err_code = sd_ble_gap_sec_params_reply(m_conn_handle, BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL);
             APP_ERROR_CHECK(err_code);
-            break;
+            break;*/
 
-        case BLE_GATTS_EVT_SYS_ATTR_MISSING:
+  /*      case BLE_GATTS_EVT_SYS_ATTR_MISSING:
             // No system attributes have been stored.
             err_code = sd_ble_gatts_sys_attr_set(m_conn_handle, NULL, 0, 0);
             APP_ERROR_CHECK(err_code);
-            break;
+            break;*/
+           /////////Removed for bonding process//////////
 
         case BLE_GATTC_EVT_TIMEOUT:
             // Disconnect on GATT Client timeout event.
@@ -537,12 +593,14 @@ void uart_event_handle(app_uart_evt_t * p_event)
                 if (index > 1)
                 {
                     NRF_LOG_DEBUG("Ready to send data over BLE NUS");
+                    NRF_LOG_INFO("ready to!!");
                     NRF_LOG_HEXDUMP_DEBUG(data_array, index);
 
                     do
                     {
                         uint16_t length = (uint16_t)index;
                         err_code = ble_nus_data_send(&m_nus, data_array, &length, m_conn_handle);
+                        NRF_LOG_INFO("SEND DATA!!");
                         if ((err_code != NRF_ERROR_INVALID_STATE) &&
                             (err_code != NRF_ERROR_RESOURCES) &&
                             (err_code != NRF_ERROR_NOT_FOUND))
@@ -649,6 +707,53 @@ static void buttons_leds_init(bool * p_erase_bonds)
 }
 
 
+/**@brief Function for the Peer Manager initialization.
+ */
+static void peer_manager_init(void)
+{
+    ret_code_t err_code;
+
+    err_code = pm_init();
+    APP_ERROR_CHECK(err_code);
+
+    err_code = pm_register(pm_evt_handler);
+    APP_ERROR_CHECK(err_code);
+
+    ble_gap_sec_params_t sec_param;
+
+    memset(&sec_param, 0, sizeof(ble_gap_sec_params_t));
+
+    sec_param.bond           = SEC_PARAM_BOND;
+    sec_param.mitm           = SEC_PARAM_MITM;
+    sec_param.lesc           = SEC_PARAM_LESC;
+    sec_param.keypress       = SEC_PARAM_KEYPRESS;
+    sec_param.io_caps        = SEC_PARAM_IO_CAPABILITIES;
+    sec_param.oob            = SEC_PARAM_OOB;
+    sec_param.min_key_size   = SEC_PARAM_MIN_KEY_SIZE;
+    sec_param.max_key_size   = SEC_PARAM_MAX_KEY_SIZE;
+    sec_param.kdist_own.enc  = 1;
+    sec_param.kdist_own.id   = 1;
+    sec_param.kdist_peer.enc = 1;
+    sec_param.kdist_peer.id  = 1;
+
+    err_code = pm_sec_params_set(&sec_param);
+    APP_ERROR_CHECK(err_code);
+}
+
+/**@brief Clear bond information from persistent storage.
+ */
+static void delete_bonds(void)
+{
+    ret_code_t err_code;
+
+    NRF_LOG_INFO("Erase bonds");
+
+    err_code = pm_peers_delete();
+    APP_ERROR_CHECK(err_code);
+}
+///////////Added for bonding/////////////
+
+
 /**@brief Function for initializing the nrf log module.
  */
 static void log_init(void)
@@ -683,12 +788,31 @@ static void idle_state_handle(void)
 
 /**@brief Function for starting advertising.
  */
-static void advertising_start(void)
+/*static void advertising_start(void)
 {
     uint32_t err_code = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
     APP_ERROR_CHECK(err_code);
-}
+}*/
 
+
+////////////Added for bonding//////////////
+/**@brief Function for starting advertising.
+ */
+static void advertising_start(bool erase_bonds)
+{
+    if (erase_bonds == true)
+    {
+        delete_bonds();
+        // Advertising is started by PM_EVT_PEERS_DELETE_SUCCEEDED event.
+    }
+    else
+    {
+        ret_code_t err_code = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
+
+        APP_ERROR_CHECK(err_code);
+    }
+}
+////////////Added for bonding//////////////
 
 /**@brief Application main function.
  */
@@ -708,11 +832,15 @@ int main(void)
     services_init();
     advertising_init();
     conn_params_init();
+    
+    /////////Added for bonding//////////
+    peer_manager_init();
+    /////////Added for bonding//////////
 
     // Start execution.
     printf("\r\nUART started.\r\n");
     NRF_LOG_INFO("Debug logging for UART over RTT started.");
-    advertising_start();
+    advertising_start(erase_bonds);
 
     // Enter main loop.
     for (;;)
