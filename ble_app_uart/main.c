@@ -80,6 +80,20 @@
 #include "nrf_log_ctrl.h"
 #include "nrf_log_default_backends.h"
 
+///////////Added for bonding////////////
+#include "peer_manager.h"
+#include "peer_manager_handler.h"
+
+#define SEC_PARAM_BOND                  1                                       /**< Perform bonding. */
+#define SEC_PARAM_MITM                  1                                       /**< Man In The Middle protection is enabled. */
+#define SEC_PARAM_LESC                  0                                       /**< LE Secure Connections not enabled. */
+#define SEC_PARAM_KEYPRESS              0                                       /**< Keypress notifications not enabled. */
+#define SEC_PARAM_IO_CAPABILITIES       BLE_GAP_IO_CAPS_DISPLAY_ONLY            /**< Display Only. */
+#define SEC_PARAM_OOB                   0                                       /**< Out Of Band data not available. */
+#define SEC_PARAM_MIN_KEY_SIZE          7                                       /**< Minimum encryption key size. */
+#define SEC_PARAM_MAX_KEY_SIZE          16                                      /**< Maximum encryption key size. */
+///////////Added for bonding////////////
+
 #define APP_BLE_CONN_CFG_TAG            1                                           /**< A tag identifying the SoftDevice BLE configuration. */
 
 #define DEVICE_NAME                     "Nordic_UART"                               /**< Name of device. Will be included in the advertising data. */
@@ -99,6 +113,9 @@
 #define NEXT_CONN_PARAMS_UPDATE_DELAY   APP_TIMER_TICKS(30000)                      /**< Time between each call to sd_ble_gap_conn_param_update after the first call (30 seconds). */
 #define MAX_CONN_PARAMS_UPDATE_COUNT    3                                           /**< Number of attempts before giving up the connection parameter negotiation. */
 
+#define PASSKEY_TXT                     "Passkey:"                                  /**< Message to be displayed together with the pass-key. */
+#define PASSKEY_TXT_LENGTH              8                                           /**< Length of message to be displayed together with the pass-key. */
+#define PASSKEY_LENGTH                  6                                           /**< Length of pass-key received by the stack for display. */
 #define DEAD_BEEF                       0xDEADBEEF                                  /**< Value used as error code on stack dump, can be used to identify stack location on stack unwind. */
 
 #define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
@@ -117,6 +134,20 @@ static ble_uuid_t m_adv_uuids[]          =                                      
     {BLE_UUID_NUS_SERVICE, NUS_SERVICE_UUID_TYPE}
 };
 
+////////////Added for bonding///////////
+
+static pm_peer_id_t m_peer_to_be_deleted = PM_PEER_ID_INVALID;
+
+// Static passkey
+#define STATIC_PASSKEY    "123456" 
+static ble_opt_t    m_static_pin_option;
+uint8_t passkey[] = STATIC_PASSKEY; 
+////////////Added for bonding///////////
+
+
+////////////Added for bonding///////////
+static void advertising_start(bool erase_bonds);
+////////////Added for bonding///////////
 
 /**@brief Function for assert macro callback.
  *
@@ -133,6 +164,63 @@ void assert_nrf_callback(uint16_t line_num, const uint8_t * p_file_name)
 {
     app_error_handler(DEAD_BEEF, line_num, p_file_name);
 }
+
+
+///////////Added for bonding/////////////
+/**@brief Function for handling Peer Manager events.
+ *
+ * @param[in] p_evt  Peer Manager event.
+ */
+static void pm_evt_handler(pm_evt_t const * p_evt)
+{
+    ret_code_t err_code;
+
+    pm_handler_on_pm_evt(p_evt);
+    pm_handler_disconnect_on_sec_failure(p_evt);
+    pm_handler_flash_clean(p_evt);
+
+    switch (p_evt->evt_id)
+    {
+        case PM_EVT_CONN_SEC_SUCCEEDED:
+        {
+            pm_conn_sec_status_t conn_sec_status;
+
+            // Check if the link is authenticated (meaning at least MITM).
+            err_code = pm_conn_sec_status_get(p_evt->conn_handle, &conn_sec_status);
+            APP_ERROR_CHECK(err_code);
+
+            if (conn_sec_status.mitm_protected)
+            {
+                NRF_LOG_INFO("Link secured. Role: %d. conn_handle: %d, Procedure: %d",
+                             ble_conn_state_role(p_evt->conn_handle),
+                             p_evt->conn_handle,
+                             p_evt->params.conn_sec_succeeded.procedure);
+            }
+            else
+            {
+                // The peer did not use MITM, disconnect.
+                NRF_LOG_INFO("Collector did not use MITM, disconnecting");
+                err_code = pm_peer_id_get(m_conn_handle, &m_peer_to_be_deleted);
+                APP_ERROR_CHECK(err_code);
+                err_code = sd_ble_gap_disconnect(m_conn_handle,
+                                                 BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+                APP_ERROR_CHECK(err_code);
+            }
+        } break;
+
+        case PM_EVT_CONN_SEC_FAILED:
+            m_conn_handle = BLE_CONN_HANDLE_INVALID;
+            break;
+
+        case PM_EVT_PEERS_DELETE_SUCCEEDED:
+            advertising_start(false);
+            break;
+
+        default:
+            break;
+    }
+}
+///////////Added for bonding////////////
 
 /**@brief Function for initializing the timer module.
  */
@@ -169,6 +257,12 @@ static void gap_params_init(void)
 
     err_code = sd_ble_gap_ppcp_set(&gap_conn_params);
     APP_ERROR_CHECK(err_code);
+
+    ////////Added for bonding ///////////
+    m_static_pin_option.gap_opt.passkey.p_passkey = &passkey[0]; 
+    err_code =  sd_ble_opt_set(BLE_GAP_OPT_PASSKEY, &m_static_pin_option); 
+    APP_ERROR_CHECK(err_code);
+    ////////Added for bonding ///////////
 }
 
 
@@ -356,24 +450,37 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
  */
 static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 {
-    uint32_t err_code;
+    ret_code_t err_code;
+
+    pm_handler_secure_on_connection(p_ble_evt);
 
     switch (p_ble_evt->header.evt_id)
     {
+        case BLE_GAP_EVT_DISCONNECTED:
+        {
+            NRF_LOG_INFO("Disconnected");
+            m_conn_handle = BLE_CONN_HANDLE_INVALID;
+            // Check if the last connected peer had not used MITM, if so, delete its bond information.
+            if (m_peer_to_be_deleted != PM_PEER_ID_INVALID)
+            {
+                err_code = pm_peer_delete(m_peer_to_be_deleted);
+                APP_ERROR_CHECK(err_code);
+                NRF_LOG_DEBUG("Collector's bond deleted");
+                m_peer_to_be_deleted = PM_PEER_ID_INVALID;
+            }
+        } break;
+
         case BLE_GAP_EVT_CONNECTED:
+        {
             NRF_LOG_INFO("Connected");
+            m_peer_to_be_deleted = PM_PEER_ID_INVALID;
             err_code = bsp_indication_set(BSP_INDICATE_CONNECTED);
             APP_ERROR_CHECK(err_code);
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
             err_code = nrf_ble_qwr_conn_handle_assign(&m_qwr, m_conn_handle);
             APP_ERROR_CHECK(err_code);
-            break;
-
-        case BLE_GAP_EVT_DISCONNECTED:
-            NRF_LOG_INFO("Disconnected");
-            // LED indication will be changed when advertising starts.
-            m_conn_handle = BLE_CONN_HANDLE_INVALID;
-            break;
+            // Start Security Request timer.
+        } break;
 
         case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
         {
@@ -387,20 +494,9 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
             APP_ERROR_CHECK(err_code);
         } break;
 
-        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
-            // Pairing not supported
-            err_code = sd_ble_gap_sec_params_reply(m_conn_handle, BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL);
-            APP_ERROR_CHECK(err_code);
-            break;
-
-        case BLE_GATTS_EVT_SYS_ATTR_MISSING:
-            // No system attributes have been stored.
-            err_code = sd_ble_gatts_sys_attr_set(m_conn_handle, NULL, 0, 0);
-            APP_ERROR_CHECK(err_code);
-            break;
-
         case BLE_GATTC_EVT_TIMEOUT:
             // Disconnect on GATT Client timeout event.
+            NRF_LOG_DEBUG("GATT Client Timeout.");
             err_code = sd_ble_gap_disconnect(p_ble_evt->evt.gattc_evt.conn_handle,
                                              BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
             APP_ERROR_CHECK(err_code);
@@ -408,9 +504,40 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 
         case BLE_GATTS_EVT_TIMEOUT:
             // Disconnect on GATT Server timeout event.
+            NRF_LOG_DEBUG("GATT Server Timeout.");
             err_code = sd_ble_gap_disconnect(p_ble_evt->evt.gatts_evt.conn_handle,
                                              BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
             APP_ERROR_CHECK(err_code);
+            break;
+
+        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
+            NRF_LOG_DEBUG("BLE_GAP_EVT_SEC_PARAMS_REQUEST");
+            break;
+
+        case BLE_GAP_EVT_PASSKEY_DISPLAY:
+        {
+            char passkey[PASSKEY_LENGTH + 1];
+            memcpy(passkey, p_ble_evt->evt.gap_evt.params.passkey_display.passkey, PASSKEY_LENGTH);
+            passkey[PASSKEY_LENGTH] = 0;
+
+            NRF_LOG_INFO("Passkey: %s", nrf_log_push(passkey));
+        } break;
+        
+        case BLE_GAP_EVT_AUTH_KEY_REQUEST:
+            NRF_LOG_INFO("BLE_GAP_EVT_AUTH_KEY_REQUEST");
+            break;
+
+        case BLE_GAP_EVT_LESC_DHKEY_REQUEST:
+            NRF_LOG_INFO("BLE_GAP_EVT_LESC_DHKEY_REQUEST");
+            break;
+
+         case BLE_GAP_EVT_AUTH_STATUS:
+             NRF_LOG_INFO("BLE_GAP_EVT_AUTH_STATUS: status=0x%x bond=0x%x lv4: %d kdist_own:0x%x kdist_peer:0x%x",
+                          p_ble_evt->evt.gap_evt.params.auth_status.auth_status,
+                          p_ble_evt->evt.gap_evt.params.auth_status.bonded,
+                          p_ble_evt->evt.gap_evt.params.auth_status.sm1_levels.lv4,
+                          *((uint8_t *)&p_ble_evt->evt.gap_evt.params.auth_status.kdist_own),
+                          *((uint8_t *)&p_ble_evt->evt.gap_evt.params.auth_status.kdist_peer));
             break;
 
         default:
@@ -649,6 +776,53 @@ static void buttons_leds_init(bool * p_erase_bonds)
 }
 
 
+/**@brief Function for the Peer Manager initialization.
+ */
+static void peer_manager_init(void)
+{
+    ble_gap_sec_params_t sec_param;
+    ret_code_t           err_code;
+
+    err_code = pm_init();
+    APP_ERROR_CHECK(err_code);
+
+    memset(&sec_param, 0, sizeof(ble_gap_sec_params_t));
+
+    // Security parameters to be used for all security procedures.
+    sec_param.bond           = SEC_PARAM_BOND;
+    sec_param.mitm           = SEC_PARAM_MITM;
+    sec_param.lesc           = SEC_PARAM_LESC;
+    sec_param.keypress       = SEC_PARAM_KEYPRESS;
+    sec_param.io_caps        = SEC_PARAM_IO_CAPABILITIES;
+    sec_param.oob            = SEC_PARAM_OOB;
+    sec_param.min_key_size   = SEC_PARAM_MIN_KEY_SIZE;
+    sec_param.max_key_size   = SEC_PARAM_MAX_KEY_SIZE;
+    sec_param.kdist_own.enc  = 1;
+    sec_param.kdist_own.id   = 1;
+    sec_param.kdist_peer.enc = 1;
+    sec_param.kdist_peer.id  = 1;
+
+    err_code = pm_sec_params_set(&sec_param);
+    APP_ERROR_CHECK(err_code);
+
+    err_code = pm_register(pm_evt_handler);
+    APP_ERROR_CHECK(err_code);
+}
+
+/**@brief Clear bond information from persistent storage.
+ */
+static void delete_bonds(void)
+{
+    ret_code_t err_code;
+
+    NRF_LOG_INFO("Erase bonds");
+
+    err_code = pm_peers_delete();
+    APP_ERROR_CHECK(err_code);
+}
+///////////Added for bonding/////////////
+
+
 /**@brief Function for initializing the nrf log module.
  */
 static void log_init(void)
@@ -683,14 +857,24 @@ static void idle_state_handle(void)
 }
 
 
+////////////Added for bonding//////////////
 /**@brief Function for starting advertising.
  */
-static void advertising_start(void)
+static void advertising_start(bool erase_bonds)
 {
-    uint32_t err_code = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
-    APP_ERROR_CHECK(err_code);
-}
+    if (erase_bonds == true)
+    {
+        delete_bonds();
+        // Advertising is started by PM_EVT_PEERS_DELETE_SUCCEEDED event.
+    }
+    else
+    {
+        ret_code_t err_code = ble_advertising_start(&m_advertising, BLE_ADV_MODE_FAST);
 
+        APP_ERROR_CHECK(err_code);
+    }
+}
+////////////Added for bonding//////////////
 
 /**@brief Application main function.
  */
@@ -710,11 +894,15 @@ int main(void)
     services_init();
     advertising_init();
     conn_params_init();
+    
+    /////////Added for bonding//////////
+    peer_manager_init();
+    /////////Added for bonding//////////
 
     // Start execution.
     printf("\r\nUART started.\r\n");
     NRF_LOG_INFO("Debug logging for UART over RTT started.");
-    advertising_start();
+    advertising_start(erase_bonds);
 
     // Enter main loop.
     for (;;)
