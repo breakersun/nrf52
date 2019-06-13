@@ -435,7 +435,9 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
             APP_ERROR_CHECK(err_code);
             break;
         case BLE_ADV_EVT_IDLE:
-            sleep_mode_enter();
+            //sleep_mode_enter();
+            /* never stops adv, just resetart it */
+            advertising_start(false);
             break;
         default:
             break;
