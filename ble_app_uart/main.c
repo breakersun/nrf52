@@ -658,87 +658,37 @@ void uart_event_handle(app_uart_evt_t * p_event)
 {
     static uint8_t data_array[BLE_NUS_MAX_DATA_LEN];
     static uint8_t index = 0;
-    static uint8_t state = 0;
-    static uint8_t frame_len = 0;
     uint32_t       err_code;
 
     switch (p_event->evt_type)
     {
         case APP_UART_DATA_READY:
             UNUSED_VARIABLE(app_uart_get(&data_array[index]));
+            index++;
 
-            if (state == 0 && data_array[index] == 0xFF)
+            if (((data_array[index - 2] == 0xFE) &&
+                (data_array[index - 1] == 0x55)) ||
+                (index >= m_ble_nus_max_data_len))
             {
-                index++;
-                state = 1;
-                break;
-            }
-
-            if (state == 1)
-            {
-                if (data_array[index] == 0x55)
+                if (index > 1)
                 {
-                    index++;
-                    state = 2;
-                    break;
-                }
-                else if (data_array[index] == 0xFF)
-                {
-                    state = 1;
-                    break;
-                }
-                else
-                {
-                    index = 0;
-                    state = 0;
-                    break;
-                }
-            }
+                    NRF_LOG_DEBUG("Ready to send data over BLE NUS");
+                    NRF_LOG_HEXDUMP_DEBUG(data_array, index);
 
-            if (state == 2)
-            {
-                index++;
-                state = 3;
-                break;
-            }
-
-            if (state == 3)
-            {
-                frame_len = data_array[index];
-                index++;
-                state = 4;
-                break;
-            }
-
-            if (state == 4)
-            {
-                if (index == (frame_len + 3))
-                {
-                    state = 5;
-                }
-                index++;
-                break;
-            }
-
-            if (state == 5)
-            {
-                NRF_LOG_INFO("Ready to send data over BLE NUS");
-                NRF_LOG_HEXDUMP_INFO(data_array, index + 1);
-
-                do
-                {
-                    uint16_t length = (uint16_t)index + 1;
-                    err_code = ble_nus_data_send(&m_nus, data_array, &length, m_conn_handle);
-                    if ((err_code != NRF_ERROR_INVALID_STATE) &&
-                        (err_code != NRF_ERROR_RESOURCES) &&
-                        (err_code != NRF_ERROR_NOT_FOUND))
+                    do
                     {
-                        APP_ERROR_CHECK(err_code);
-                    }
-                } while (err_code == NRF_ERROR_RESOURCES);
+                        uint16_t length = (uint16_t)index;
+                        err_code = ble_nus_data_send(&m_nus, data_array, &length, m_conn_handle);
+                        if ((err_code != NRF_ERROR_INVALID_STATE) &&
+                            (err_code != NRF_ERROR_RESOURCES) &&
+                            (err_code != NRF_ERROR_NOT_FOUND))
+                        {
+                            APP_ERROR_CHECK(err_code);
+                        }
+                    } while (err_code == NRF_ERROR_RESOURCES);
+                }
 
                 index = 0;
-                state = 0;
             }
             break;
 
