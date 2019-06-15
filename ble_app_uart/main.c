@@ -667,7 +667,7 @@ void uart_event_handle(app_uart_evt_t * p_event)
             index++;
 
             if (((data_array[index - 2] == 0xFE) &&
-                (data_array[index - 1] == 0x55)) ||
+                (data_array[index - 1] == 0xAA)) ||
                 (index >= m_ble_nus_max_data_len))
             {
                 if (index > 1)
