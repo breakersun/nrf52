@@ -121,6 +121,13 @@
 #define UART_TX_BUF_SIZE                256                                         /**< UART TX buffer size. */
 #define UART_RX_BUF_SIZE                256                                         /**< UART RX buffer size. */
 
+typedef enum
+{
+    ready = 0,
+    pairing,
+    paired,
+    pair_failed
+}ble_state_e;
 
 BLE_NUS_DEF(m_nus, NRF_SDH_BLE_TOTAL_LINK_COUNT);                                   /**< BLE NUS service instance. */
 NRF_BLE_GATT_DEF(m_gatt);                                                           /**< GATT module instance. */
@@ -148,6 +155,28 @@ uint8_t passkey[] = STATIC_PASSKEY;
 ////////////Added for bonding///////////
 static void advertising_start(bool erase_bonds);
 ////////////Added for bonding///////////
+
+static void ble_state_uart_report(ble_state_e state)
+{
+    uint32_t err_code;
+    uint8_t cmd[6] = {0xFF, 0x55, 0x0a, 0x01, 0x00, 0x00};
+
+    cmd[4] = state;
+    cmd[5] = cmd[0] ^ cmd[1] ^ cmd[2] ^ cmd[3] ^ cmd[4];
+
+    for (uint32_t i = 0; i < 6; i++)
+    {
+        do
+        {
+            err_code = app_uart_put(cmd[i]);
+            if ((err_code != NRF_SUCCESS) && (err_code != NRF_ERROR_BUSY))
+            {
+                NRF_LOG_ERROR("Failed receiving NUS message. Error 0x%x. ", err_code);
+                APP_ERROR_CHECK(err_code);
+            }
+        } while (err_code == NRF_ERROR_BUSY);
+    }
+}
 
 /**@brief Function for assert macro callback.
  *
@@ -191,6 +220,7 @@ static void pm_evt_handler(pm_evt_t const * p_evt)
 
             if (conn_sec_status.mitm_protected)
             {
+                ble_state_uart_report(paired);
                 NRF_LOG_INFO("Link secured. Role: %d. conn_handle: %d, Procedure: %d",
                              ble_conn_state_role(p_evt->conn_handle),
                              p_evt->conn_handle,
@@ -198,6 +228,7 @@ static void pm_evt_handler(pm_evt_t const * p_evt)
             }
             else
             {
+                ble_state_uart_report(pair_failed);
                 // The peer did not use MITM, disconnect.
                 NRF_LOG_INFO("Collector did not use MITM, disconnecting");
                 err_code = pm_peer_id_get(m_conn_handle, &m_peer_to_be_deleted);
@@ -209,6 +240,7 @@ static void pm_evt_handler(pm_evt_t const * p_evt)
         } break;
 
         case PM_EVT_CONN_SEC_FAILED:
+            ble_state_uart_report(pair_failed);
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
             break;
 
@@ -323,6 +355,9 @@ static void nus_data_handler(ble_nus_evt_t * p_evt)
     }
 
 }
+
+
+
 /**@snippet [Handling the data received over BLE] */
 
 
@@ -438,6 +473,7 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
     switch (ble_adv_evt)
     {
         case BLE_ADV_EVT_FAST:
+            ble_state_uart_report(ready);
             err_code = bsp_indication_set(BSP_INDICATE_ADVERTISING);
             APP_ERROR_CHECK(err_code);
             break;
@@ -467,6 +503,7 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
     {
         case BLE_GAP_EVT_DISCONNECTED:
         {
+            //ble_state_uart_report(pair_failed);
             NRF_LOG_INFO("Disconnected");
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
             // Check if the last connected peer had not used MITM, if so, delete its bond information.
@@ -481,6 +518,7 @@ static void ble_evt_handler(ble_evt_t const * p_ble_evt, void * p_context)
 
         case BLE_GAP_EVT_CONNECTED:
         {
+            ble_state_uart_report(pairing);
             NRF_LOG_INFO("Connected");
             m_peer_to_be_deleted = PM_PEER_ID_INVALID;
             err_code = bsp_indication_set(BSP_INDICATE_CONNECTED);
@@ -722,7 +760,7 @@ static void uart_init(void)
         .flow_control = APP_UART_FLOW_CONTROL_DISABLED,
         .use_parity   = false,
 #if defined (UART_PRESENT)
-        .baud_rate    = NRF_UART_BAUDRATE_115200
+        .baud_rate    = NRF_UART_BAUDRATE_9600
 #else
         .baud_rate    = NRF_UARTE_BAUDRATE_115200
 #endif
