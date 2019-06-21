@@ -715,7 +715,7 @@ void uart_event_handle(app_uart_evt_t * p_event)
 
                     do
                     {
-                        uint16_t length = (uint16_t)index;
+                        uint16_t length = (uint16_t)index - 2;
                         err_code = ble_nus_data_send(&m_nus, data_array, &length, m_conn_handle);
                         if ((err_code != NRF_ERROR_INVALID_STATE) &&
                             (err_code != NRF_ERROR_RESOURCES) &&
