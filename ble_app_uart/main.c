@@ -68,6 +68,7 @@
 #include "app_util_platform.h"
 #include "bsp_btn_ble.h"
 #include "nrf_pwr_mgmt.h"
+#include "nrf_ble_lesc.h"
 
 #if defined (UART_PRESENT)
 #include "nrf_uart.h"
@@ -86,7 +87,7 @@
 
 #define SEC_PARAM_BOND                  1                                       /**< Perform bonding. */
 #define SEC_PARAM_MITM                  1                                       /**< Man In The Middle protection is enabled. */
-#define SEC_PARAM_LESC                  0                                       /**< LE Secure Connections not enabled. */
+#define SEC_PARAM_LESC                  1                                       /**< LE Secure Connections not enabled. */
 #define SEC_PARAM_KEYPRESS              0                                       /**< Keypress notifications not enabled. */
 #define SEC_PARAM_IO_CAPABILITIES       BLE_GAP_IO_CAPS_DISPLAY_ONLY            /**< Display Only. */
 #define SEC_PARAM_OOB                   0                                       /**< Out Of Band data not available. */
@@ -897,6 +898,11 @@ static void power_management_init(void)
  */
 static void idle_state_handle(void)
 {
+    ret_code_t err_code;
+
+    err_code = nrf_ble_lesc_request_handler();
+    APP_ERROR_CHECK(err_code);
+
     if (NRF_LOG_PROCESS() == false)
     {
         nrf_pwr_mgmt_run();
