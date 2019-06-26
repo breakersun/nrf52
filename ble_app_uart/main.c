@@ -52,9 +52,11 @@
 #include <stdint.h>
 #include <string.h>
 
+#if (BLE_DFU_ENABLED)
 #include "nrf_dfu_ble_svci_bond_sharing.h"
 #include "nrf_svci_async_function.h"
 #include "nrf_svci_async_handler.h"
+#endif
 
 #include "nordic_common.h"
 #include "nrf.h"
